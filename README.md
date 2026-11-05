@@ -4,12 +4,12 @@ The Dutch product database used by [Basket Vitality](https://basketvitality.com)
 
 ## Get the data
 
-| Release | What it is |
+| Where | What it is |
 |---|---|
-| [`seed-nl-latest`](https://github.com/The-Dev-Spot/basketvitality-seed/releases/tag/seed-nl-latest) | Rebuilt nightly from the Open Food Facts export. |
-| [`seed-nl-app-1.1.7`](https://github.com/The-Dev-Spot/basketvitality-seed/releases/tag/seed-nl-app-1.1.7) | The exact file inside app version 1.1.7, cut on 2026-07-23. |
+| [`seed-nl-latest` release](https://github.com/The-Dev-Spot/basketvitality-seed/releases/tag/seed-nl-latest) | Rebuilt nightly from the Open Food Facts export. |
+| [`data/app-1.1.7/`](data/app-1.1.7/) | The exact file inside app version 1.1.7, cut on 2026-07-23. |
 
-Each release has `seed-netherlands.jsonl.gz` (gzipped JSON, one product per line) and `manifest.json` (version, row count and SHA-256).
+Each has `seed-netherlands.jsonl.gz` (gzipped JSON, one product per line) and `manifest.json` (version, row count and SHA-256).
 
 ## How the seed differs from Open Food Facts
 

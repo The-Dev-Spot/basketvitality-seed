@@ -1,0 +1,11 @@
+{
+  "version": "2026-07-23",
+  "country": "en:netherlands",
+  "seedFile": "seed-netherlands.jsonl.gz",
+  "rowCount": 71761,
+  "sha256": "5ebcc4226c5098763e9859d8f62b391db4ccd711a022f02c576b6d1da9e7192e",
+  "attributions": [
+    "Product data \u00a9 Open Food Facts contributors \u2014 https://world.openfoodfacts.org \u2014 Open Database License (ODbL) v1.0"
+  ],
+  "generator": "cut_off_nl.py"
+}
