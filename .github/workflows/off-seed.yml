@@ -3,7 +3,8 @@ name: OFF NL seed
 # Nightly cutter for the Basket Vitality product seed.
 # Downloads the Open Food Facts export, cuts the Dutch slice into
 # seed-netherlands.jsonl.gz + manifest.json, and publishes both on the rolling
-# `seed-nl-latest` release. The app's build downloads the seed from that release.
+# `seed-nl-latest` release. App builds don't use it directly: they pin a copy from
+# this repo's data folder after a review.
 
 on:
   schedule:
