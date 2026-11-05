@@ -1,0 +1,124 @@
+name: OFF NL seed
+
+# Nightly cutter for the Basket Vitality product seed.
+# Downloads the Open Food Facts export, cuts the Dutch slice into
+# seed-netherlands.jsonl.gz + manifest.json, and publishes both on the rolling
+# `seed-nl-latest` release. The app's build downloads the seed from that release.
+
+on:
+  schedule:
+    - cron: "20 3 * * *" # nightly, after OFF's own export regenerates
+  workflow_dispatch:
+
+permissions:
+  contents: write # create/update the rolling release
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test export schema compatibility
+        run: python3 -m unittest discover -s scripts/seed -p 'test_*.py' -v
+
+      - name: Smoke-test cutter against committed fixture
+        # HOM-787: assert on the OUTPUT, not just the row count — before this,
+        # the NOVA range guard could be broken (e.g. clamped instead of
+        # dropped) and CI stayed green while the seed shipped a fabricated
+        # "Ultra-processed" claim for every junk row.
+        run: |
+          python3 scripts/seed/cut_off_nl.py \
+            --input scripts/seed/fixtures/off_sample.tsv.gz \
+            --output-dir /tmp/smoke --min-rows 4
+          rows=$(zcat /tmp/smoke/seed-netherlands.jsonl.gz | wc -l)
+          test "$rows" -eq 4
+          zcat /tmp/smoke/seed-netherlands.jsonl.gz | jq -e -s '
+            (map(select(.barcode=="1000000000024"))[0].novaGroup == null) and
+            (map(select(.barcode=="1000000000017"))[0].novaGroup == 1) and
+            (map(select(.barcode=="1000000000055"))[0].novaGroup == 4) and
+            (map(select(.barcode=="1000000000062"))[0].novaGroup == null)' \
+            || { echo "::error::NOVA guard assertions failed on fixture output"; exit 1; }
+          # HOM-891: diet/palm verdicts must mirror the app's HOM-762 parser —
+          # YES/NO/MAYBE on exact tags, status-unknown and absent stay null.
+          zcat /tmp/smoke/seed-netherlands.jsonl.gz | jq -e -s '
+            (map(select(.barcode=="1000000000017"))[0] |
+              (.vegetarianStatus == "YES" and .veganStatus == "NO" and .palmOil == "FREE")) and
+            (map(select(.barcode=="1000000000024"))[0] |
+              (.vegetarianStatus == "MAYBE" and .veganStatus == null and .palmOil == "CONTAINS")) and
+            (map(select(.barcode=="1000000000055"))[0] |
+              (.vegetarianStatus == null and .veganStatus == "YES" and .palmOil == null)) and
+            (map(select(.barcode=="1000000000062"))[0] |
+              (.vegetarianStatus == null and .veganStatus == null and .palmOil == null))' \
+            || { echo "::error::diet-verdict assertions failed on fixture output"; exit 1; }
+
+      - name: Smoke-test neighbour complement (HOM-1186)
+        # The complement is only as good as its brand filter. At --min-brand-rows
+        # 1 the brand-overlap probe returned hundreds of thousands of rows of
+        # mostly French own-brand (Auchan has FOUR Dutch rows and pulled 16,958);
+        # at 20 the complement is 84,628 and the brand list reads like a Dutch
+        # shelf. These assertions pin the three rules that produce the difference.
+        run: |
+          python3 scripts/seed/cut_off_nl.py \
+            --mode neighbours \
+            --input scripts/seed/fixtures/off_sample.tsv.gz \
+            --primary-seed /tmp/smoke/seed-netherlands.jsonl.gz \
+            --output-dir /tmp/smoke-nb --min-brand-rows 1
+          rows=$(zcat /tmp/smoke-nb/seed-neighbours.jsonl.gz | wc -l)
+          test "$rows" -eq 1 \
+            || { echo "::error::expected exactly one neighbour row (stocked brand + gradeable)"; exit 1; }
+          # Kept: German, brand we stock, all four Nutri-Score fields.
+          # Dropped: 'Marque' (brand absent from our cut) and the Belgian
+          # waffle (no salt, so the calculator returns null anyway).
+          zcat /tmp/smoke-nb/seed-neighbours.jsonl.gz | jq -e -s '
+            (length == 1) and (.[0].barcode == "1000000000079")' \
+            || { echo "::error::neighbour complement kept the wrong row"; exit 1; }
+          # --include-ungraded relaxes only the nutriment rule.
+          python3 scripts/seed/cut_off_nl.py \
+            --mode neighbours \
+            --input scripts/seed/fixtures/off_sample.tsv.gz \
+            --primary-seed /tmp/smoke/seed-netherlands.jsonl.gz \
+            --output-dir /tmp/smoke-nb-all --min-brand-rows 1 --include-ungraded
+          rows_all=$(zcat /tmp/smoke-nb-all/seed-neighbours.jsonl.gz | wc -l)
+          test "$rows_all" -eq 2 \
+            || { echo "::error::--include-ungraded should also keep the ungradeable row"; exit 1; }
+          # A filter that admits nothing must fail loudly, not ship an empty file.
+          if python3 scripts/seed/cut_off_nl.py \
+               --mode neighbours \
+               --input scripts/seed/fixtures/off_sample.tsv.gz \
+               --primary-seed /tmp/smoke/seed-netherlands.jsonl.gz \
+               --output-dir /tmp/smoke-nb-none --min-brand-rows 999; then
+            echo "::error::an impossible brand threshold should have exited non-zero"; exit 1
+          fi
+
+      - name: Download OFF CSV export (~0.9 GB)
+        run: |
+          curl --fail -sSL --retry 3 --retry-delay 30 \
+            -H "User-Agent: BasketVitalitySeed/0.1 (github.com/The-Dev-Spot/basketvitality-seed)" \
+            -o off-products.csv.gz \
+            "https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz"
+
+      - name: Cut NL slice
+        # min-rows gate: first real run (2026-07-11) kept 71,761 NL products from
+        # 4.54M scanned — the CSV export carries fewer NL entries than the API's
+        # 103k search count. 60k catches truncation/drift without false alarms.
+        run: |
+          python3 scripts/seed/cut_off_nl.py \
+            --input off-products.csv.gz \
+            --output-dir seed-out --min-rows 60000
+          cat seed-out/manifest.json
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete seed-nl-latest --yes --cleanup-tag || true
+          gh release create seed-nl-latest \
+            --title "OFF NL seed (rolling)" \
+            --notes "Nightly Open Food Facts NL slice. See manifest.json for version/row count/sha256. Data © Open Food Facts contributors, ODbL v1.0." \
+            seed-out/seed-netherlands.jsonl.gz seed-out/manifest.json

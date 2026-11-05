@@ -1,0 +1,12 @@
+The files published in this repository's releases (seed-netherlands.jsonl.gz and
+manifest.json) are a database derived from Open Food Facts.
+
+They are made available under the Open Database License (ODbL) v1.0:
+https://opendatacommons.org/licenses/odbl/1-0/
+
+Individual contents are under the Database Contents License (DbCL) v1.0:
+https://opendatacommons.org/licenses/dbcl/1-0/
+
+Attribution: © Open Food Facts contributors, https://world.openfoodfacts.org
+
+The method of making the changes is scripts/seed/cut_off_nl.py in this repository.

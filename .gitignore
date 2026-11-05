@@ -1,0 +1,4 @@
+off-products.csv.gz
+seed-out/
+__pycache__/
+*.csv.gz
