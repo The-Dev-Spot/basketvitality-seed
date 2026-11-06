@@ -47,6 +47,7 @@ import csv
 import gzip
 import hashlib
 import html
+import itertools
 import json
 import re
 import sys
@@ -252,14 +253,70 @@ def open_export(input_path: str):
     return opener(input_path, "rt", encoding="utf-8", errors="replace", newline="")
 
 
-def export_rows(fin):
+DIALECTS = ("auto", "legacy", "quoted")
+
+# Lines read to decide the dialect: enough to meet a quoted field in every
+# real export (the 2026-11-06 Dutch cut has 22 in 113k rows; the full world
+# export has thousands), small enough to buffer.
+SNIFF_LINES = 20_000
+
+
+def decode_quoted_field(value: str) -> str:
+    """One field as OFF's current exporter wrote it (HOM-1633).
+
+    That exporter (csv.writer, tab, minimal quoting) wraps a field that
+    contains a quote and doubles the quotes inside. Only a well-formed
+    wrapped field is decoded; anything else — a lone leading quote, quotes
+    in the middle — is returned as it is.
+    """
+    if len(value) < 2 or value[0] != '"' or value[-1] != '"':
+        return value
+    inner = value[1:-1]
+    if '"' in inner.replace('""', ""):
+        return value
+    return inner.replace('""', '"')
+
+
+def _dialect_of(lines) -> str:
+    """'legacy' if any field holds a quote that is not a well-formed wrapped
+    field; otherwise 'quoted' — the dialect OFF writes today, and harmless
+    for a file with no quotes at all."""
+    for line in lines:
+        for field in line.rstrip("\r\n").split("\t"):
+            if '"' in field and decode_quoted_field(field) == field:
+                return "legacy"
+    return "quoted"
+
+
+def sniff_dialect(path) -> str:
+    """The dialect of an export file, from its first [SNIFF_LINES] lines."""
+    with open_export(str(path)) as fin:
+        next(fin, None)  # header
+        return _dialect_of(itertools.islice(fin, SNIFF_LINES))
+
+
+def export_rows(fin, dialect: str = "auto"):
     """Validate the export and expose its brand display values as `brands`.
 
     OFF's October 2026 tag migration removed the raw `brands` column from
     the export in favour of `brands_en`. Accept either schema, including
     exports that retain an empty legacy column alongside the localized one.
     Normalize before both product construction and neighbour brand filtering.
+
+    Two quoting dialects (HOM-1633). Lines are always split raw
+    (QUOTE_NONE): neither exporter writes a tab or newline inside a field,
+    so a raw split never merges records — reading the legacy file as CSV
+    would, wherever a name starts with a lone quote. The current exporter's
+    wrapped fields are then decoded field by field. "auto" sniffs the first
+    [SNIFF_LINES] lines, which also works on a pipe.
     """
+    if dialect not in DIALECTS:
+        raise ValueError(f"dialect must be one of {DIALECTS}")
+    if dialect == "auto":
+        header = next(fin, "")
+        head = list(itertools.islice(fin, SNIFF_LINES))
+        dialect = _dialect_of(head)
+        fin = itertools.chain([header], head, fin)
     reader = csv.DictReader(fin, delimiter="\t", quoting=csv.QUOTE_NONE)
     fields = set(reader.fieldnames or [])
     if "brands_en" in fields:
@@ -270,12 +327,14 @@ def export_rows(fin):
     if missing:
         sys.exit(f"input is missing expected columns: {sorted(missing)}")
     for row in reader:
+        if dialect == "quoted":
+            row = {k: decode_quoted_field(v) if isinstance(v, str) else v for k, v in row.items()}
         if not (row.get("brands") or "").strip():
             row["brands"] = row.get("brands_en")
         yield row
 
 
-def cut(input_path: str, output_dir: Path, country_tag: str, max_rows: int | None) -> dict:
+def cut(input_path: str, output_dir: Path, country_tag: str, max_rows: int | None, dialect: str = "auto") -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     seed_name = f"seed-{country_tag.split(':')[-1]}.jsonl.gz"
     seed_path = output_dir / seed_name
@@ -283,7 +342,7 @@ def cut(input_path: str, output_dir: Path, country_tag: str, max_rows: int | Non
     kept = scanned = skipped_invalid = 0
     with open_export(input_path) as fin, \
             gzip.open(seed_path, "wt", encoding="utf-8") as fout:
-        for row in export_rows(fin):
+        for row in export_rows(fin, dialect):
             scanned += 1
             if max_rows and scanned > max_rows:
                 break
@@ -321,6 +380,7 @@ def cut_neighbours(
     brand_denylist: set[str],
     require_nutriments: bool,
     max_rows: int | None,
+    dialect: str = "auto",
 ) -> dict:
     """Products from adjacent markets we do not have, vouched for by a brand
     we already stock (HOM-1186).
@@ -360,7 +420,7 @@ def cut_neighbours(
     per_country: Counter = Counter()
     with open_export(input_path) as fin, \
             gzip.open(seed_path, "wt", encoding="utf-8") as fout:
-        for row in export_rows(fin):
+        for row in export_rows(fin, dialect):
             scanned += 1
             if max_rows and scanned > max_rows:
                 break
@@ -420,6 +480,10 @@ def main() -> None:
     p.add_argument("--max-rows", type=int, default=None, help="scan cap, for tests/smoke runs")
     p.add_argument("--min-rows", type=int, default=0, help="fail if fewer rows kept (sanity gate)")
     p.add_argument("--mode", choices=("country", "neighbours"), default="country")
+    p.add_argument(
+        "--dialect", choices=DIALECTS, default="auto",
+        help="export quoting: legacy (raw fields) or quoted (minimal CSV quoting, OFF since 2026-10-21)",
+    )
     p.add_argument("--primary-seed", help="neighbours mode: the seed we already ship")
     p.add_argument(
         "--neighbours",
@@ -453,9 +517,10 @@ def main() -> None:
             {b.strip().lower() for b in args.brand_denylist.split(",") if b.strip()},
             not args.include_ungraded,
             args.max_rows,
+            args.dialect,
         )
     else:
-        manifest = cut(args.input, Path(args.output_dir), args.country, args.max_rows)
+        manifest = cut(args.input, Path(args.output_dir), args.country, args.max_rows, args.dialect)
     if manifest["rowCount"] < args.min_rows:
         sys.exit(f"sanity gate failed: kept {manifest['rowCount']} < required {args.min_rows}")
 
