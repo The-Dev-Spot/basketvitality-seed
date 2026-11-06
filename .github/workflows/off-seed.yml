@@ -119,6 +119,26 @@ jobs:
             --output-dir seed-out --min-rows 60000
           cat seed-out/manifest.json
 
+      - name: No CSV quoting left in names (HOM-1633)
+        # A wrapped field ("a ""b"" c") in the output means the export's
+        # quoting dialect was misread. The 2026-11-06 nightly had 22 such names.
+        run: |
+          python3 - <<'PY'
+          import gzip, json, sys
+          bad = []
+          with gzip.open("seed-out/seed-netherlands.jsonl.gz", "rt", encoding="utf-8") as f:
+              for line in f:
+                  row = json.loads(line)
+                  for key in ("name", "brands", "quantity"):
+                      v = row.get(key) or ""
+                      if len(v) > 1 and v[0] == v[-1] == '"' and '""' in v:
+                          bad.append((row["barcode"], key, v))
+          print(f"wrapped fields left: {len(bad)}")
+          for b in bad[:10]:
+              print(b)
+          sys.exit(1 if bad else 0)
+          PY
+
       - name: Keep the seed for the publish job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
